@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+.venv/
+venv/
+env/
+
+.env
+
+.DS_Store
+.idea/
+.vscode/settings.json
+
+*.log
