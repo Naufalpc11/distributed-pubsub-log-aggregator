@@ -109,6 +109,25 @@ services:
     profiles:
       - tools
 
+  k6:
+    image: grafana/k6:0.54.0
+    container_name: uas-k6
+    command: ["run", "/scripts/load-test.js"]
+    environment:
+      TARGET_URL: http://aggregator-api:8080
+      TOTAL_EVENTS: 20000
+      DUPLICATE_RATIO: 0.30
+      RUN_ID: uasfinal001
+    volumes:
+      - ./k6:/scripts:ro
+    depends_on:
+      aggregator-api:
+        condition: service_started
+    networks:
+      - uas_net
+    profiles:
+      - tools
+
 volumes:
   pg_data:
   redis_data:
