@@ -208,3 +208,30 @@ async def get_stats(pool: asyncpg.Pool) -> dict[str, Any]:
         "counters": counters,
         "topics": topics,
     }
+
+async def record_audit_log(
+    pool: asyncpg.Pool,
+    topic: str,
+    event_id: str,
+    status: str,
+    message: str,
+    worker_name: str,
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO audit_logs (
+                topic,
+                event_id,
+                status,
+                message,
+                worker_name
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            """,
+            topic,
+            event_id,
+            status,
+            message,
+            worker_name,
+        )

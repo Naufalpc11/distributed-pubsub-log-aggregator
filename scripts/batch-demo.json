@@ -1,0 +1,29 @@
+[
+  {
+    "topic": "batch.demo",
+    "event_id": "batch-001",
+    "timestamp": "2026-06-11T10:00:00Z",
+    "source": "manual-batch",
+    "payload": {
+      "message": "event 1"
+    }
+  },
+  {
+    "topic": "batch.demo",
+    "event_id": "batch-002",
+    "timestamp": "2026-06-11T10:00:00Z",
+    "source": "manual-batch",
+    "payload": {
+      "message": "event 2"
+    }
+  },
+  {
+    "topic": "batch.demo",
+    "event_id": "batch-001",
+    "timestamp": "2026-06-11T10:00:00Z",
+    "source": "manual-batch",
+    "payload": {
+      "message": "duplicate event 1"
+    }
+  }
+]
