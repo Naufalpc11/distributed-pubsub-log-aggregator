@@ -15,3 +15,5 @@ env/
 .vscode/settings.json
 
 *.log
+
+docs/video-script.md
