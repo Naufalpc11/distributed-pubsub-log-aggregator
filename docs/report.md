@@ -7,7 +7,7 @@
 **Kelas:** A  
 **Program Studi:** Informatika  
 **Dosen Pengampu:** Riska Kurniyanto Abdullah, S.T., M.Kom.  
-**Repository GitHub:** [Isi URL Repository]  
+**Repository GitHub:** [distributed-pubsub-log-aggregator](https://github.com/Naufalpc11/distributed-pubsub-log-aggregator)<br>
 **Video Demo:** [Isi URL YouTube Unlisted/Public]
 
 ---
@@ -53,12 +53,12 @@ Masalah menjadi lebih sulit saat beberapa worker mencoba menyimpan event yang
 sama secara bersamaan karena pengecekan biasa sebelum insert rentan terhadap
 race condition.
 
-Sistem terdistribusi juga memiliki karakteristik tidak adanya global clock,
+Sistem terdistribusi juga memiliki karakteristik komunikasi asynchronous,
 concurrent execution, dan independent failure. Oleh sebab itu, correctness
 tidak dapat bergantung pada urutan eksekusi ideal atau asumsi bahwa semua
 komponen selalu tersedia. Rancangan harus menempatkan jaminan konsistensi pada
 mekanisme atomik, menyediakan recovery, dan mempertahankan data di luar siklus
-hidup container (Coulouris et al., 2012).
+hidup container (Microsoft, 2026a; Docker, Inc., 2026b).
 
 Proyek ini menerapkan prinsip tersebut dalam bentuk log aggregator
 multi-service. Redis Streams memisahkan penerimaan dan pemrosesan event,
@@ -92,276 +92,252 @@ production-grade secret management berada di luar cakupan proyek.
 
 ## T1. Karakteristik Sistem Terdistribusi dan Trade-off Desain Pub-Sub
 
-Sistem terdistribusi terdiri dari komponen yang berjalan pada proses atau
-komputer berbeda dan berkomunikasi melalui jaringan. Karakteristik utamanya
-adalah concurrency, tidak adanya global clock yang sempurna, serta kemungkinan
-setiap komponen gagal secara independen. Konsekuensinya, keterlambatan respons
-tidak selalu dapat dibedakan dari kegagalan, urutan penyelesaian operasi dapat
-berbeda dari urutan pengiriman, dan correctness harus tetap dijaga ketika
-request diulang. Heterogeneity, openness, scalability, security, failure
-handling, dan transparency juga menjadi tantangan desain sistem terdistribusi
-(Coulouris et al., 2012).
+Sistem terdistribusi pada proyek ini terdiri dari API, Redis, PostgreSQL, dan
+worker yang berjalan sebagai service berbeda di Docker Compose. Karakteristik
+utamanya adalah komunikasi lewat jaringan, eksekusi concurrent, failure
+independen, serta state yang tersebar. Microsoft Learn menjelaskan bahwa
+aplikasi cloud/distributed sering perlu mengirim event antar-komponen, dan
+direct communication membuat sender harus mengetahui endpoint setiap consumer
+serta menangani kegagalan masing-masing consumer (Microsoft, 2026a).
 
-Pada proyek ini, arsitektur Pub-Sub memisahkan producer dari consumer. API
-tidak menunggu proses database selesai; API memvalidasi event, menulisnya ke
-Redis Stream, lalu mengembalikan status `202 Accepted`. Worker dapat
-ditambahkan secara horizontal melalui consumer group. Trade-off-nya adalah
-hasil tidak langsung tersedia setelah publish, event dapat dikirim ulang, dan
-urutan selesai tidak selalu sama dengan urutan masuk. Broker juga menjadi
-komponen infrastruktur tambahan yang harus dipersistenkan dan dimonitor.
+Pub-Sub mengurangi coupling dengan menempatkan broker di tengah. API cukup
+mempublikasikan event ke Redis Stream, sementara dua worker mengambil event
+secara paralel. Trade-off-nya adalah hasil tidak langsung tersedia setelah
+`202 Accepted`, delivery dapat terjadi lebih dari sekali, dan ordering selesai
+tidak selalu sama dengan ordering masuk. Broker juga menjadi komponen baru
+yang harus dipersistenkan dan dipantau.
 
-Trade-off tersebut diterima karena kebutuhan utama adalah throughput,
-decoupling, dan toleransi gangguan consumer. Ketidakpastian delivery ditangani
-dengan idempotent consumer, unique constraint, ACK setelah commit, pending
-recovery, dan dead-letter. Dengan demikian, desain tidak menghilangkan
-karakteristik sulit sistem terdistribusi, tetapi mengelolanya melalui batas
-transaksi dan recovery yang eksplisit.
+Rancangan ini dipilih karena log aggregator lebih membutuhkan throughput,
+decoupling, dan toleransi restart worker daripada respons sinkron yang
+langsung menunggu database. Trade-off Pub-Sub dikendalikan dengan unique
+constraint `(topic, event_id)`, transaksi PostgreSQL, ACK setelah commit,
+pending recovery, dan dead-letter. Dengan demikian, sistem menerima sifat
+asynchronous distributed system, tetapi tetap menjaga invariant data pada
+batas transaksi yang jelas.
 
 ## T2. Alasan Memilih Publish-Subscribe Dibanding Client-Server
 
-Model client-server cocok ketika client membutuhkan respons langsung dari satu
-server yang bertanggung jawab menyelesaikan operasi pada request tersebut.
-Keterkaitan temporalnya kuat: client dan server harus aktif pada saat yang
-sama, dan latency client mencakup seluruh proses bisnis. Sebaliknya,
-publish-subscribe menggunakan indirect communication. Publisher mengirim
-event ke broker atau channel tanpa mengetahui consumer tertentu, sedangkan
-consumer memproses event secara independen. Pendekatan ini memberikan space,
-time, dan synchronization decoupling yang lebih baik (Coulouris et al., 2012).
+Client-server cocok ketika client membutuhkan hasil operasi secara langsung
+dari satu server. Namun pada log ingestion, producer biasanya hanya perlu
+menyerahkan event dengan cepat dan tidak harus menunggu semua efek downstream
+selesai. Azure Architecture Center membedakan command dan event; event
+menginformasikan bahwa sesuatu telah terjadi, sedangkan command meminta aksi
+spesifik dan sering memiliki kebutuhan transaksi lebih ketat (Microsoft,
+2026b). Event log pada proyek ini lebih alami diproses sebagai event
+asynchronous.
 
-Log aggregator lebih sesuai memakai Pub-Sub karena producer hanya perlu
-memastikan event diterima broker. Producer tidak perlu mengetahui jumlah
-worker, alamat worker, atau status PostgreSQL. Ketika worker direstart, API
-tetap dapat menerima event selama Redis tersedia. Dua worker dapat berbagi
-beban menggunakan consumer group tanpa mengubah publisher. Redis Stream juga
-menyimpan message dan status pending, sehingga event dapat dipulihkan jika
-consumer gagal sebelum ACK.
+Dengan Pub-Sub, publisher tidak mengetahui jumlah worker, alamat worker, atau
+status pemrosesan internal. API menulis ke Redis Stream, lalu worker membaca
+dari consumer group. Ketika worker ditambah atau direstart, publisher tidak
+berubah. Pola ini juga mendukung burst traffic: API dapat menerima event lebih
+cepat daripada kemampuan worker menyelesaikan transaksi, selama antrean dan
+storage cukup.
 
-Biayanya adalah eventual visibility dan kompleksitas reliability. Respons
-`202` berarti event sudah masuk antrean, bukan pasti sudah tersimpan pada
-`processed_events`. Sistem memerlukan endpoint `/events` dan `/stats` untuk
-melihat hasil asynchronous. Broker, retry policy, idempotency, monitoring
-pending message, dan dead-letter juga harus dirancang. Untuk kebutuhan
-pengumpulan log dengan burst traffic, duplicate delivery, dan worker paralel,
-trade-off tersebut lebih tepat daripada request sinkron client-server yang
-langsung mengikat penerimaan event dengan latency database.
+Kelemahannya adalah observability dan reliability harus dirancang eksplisit.
+Client tidak boleh menganggap `202 Accepted` berarti event sudah tersimpan di
+PostgreSQL; status akhir dilihat melalui `/events`, `/stats`, dan `/metrics`.
+Sistem juga harus menangani duplicate delivery, pending message, dan poison
+message. Untuk agregator log, biaya tersebut lebih dapat diterima daripada
+model client-server sinkron yang mengikat latency producer dengan kondisi
+database dan worker.
 
 ## T3. At-Least-Once dan Exactly-Once Delivery serta Peran Idempotent Consumer
 
-*At-most-once delivery* menghindari pengiriman ulang tetapi dapat kehilangan
-message ketika kegagalan terjadi. *At-least-once delivery* melakukan retry
-hingga message diproses atau melewati kebijakan kegagalan, sehingga peluang
-kehilangan lebih kecil tetapi duplicate delivery mungkin terjadi.
-*Exactly-once* berarti efek logis hanya terjadi satu kali. Pada sistem nyata,
-exactly-once end-to-end sulit dicapai karena broker, consumer, database, dan
-ACK memiliki batas kegagalan berbeda. Consumer dapat berhasil commit ke
-database lalu crash sebelum ACK; broker akan mengirim ulang message tersebut
-(Coulouris et al., 2012).
+Google Cloud Pub/Sub mendokumentasikan bahwa default subscription dapat
+mengirim message lebih dari sekali dan tanpa jaminan ordering; subscriber
+karena itu perlu idempotent saat memproses message (Google Cloud, 2026a).
+Dokumentasi exactly-once Pub/Sub juga menekankan bahwa subscriber harus
+melacak progress pemrosesan sampai ACK berhasil untuk mencegah duplicate work
+(Google Cloud, 2026b). Artinya, exactly-once transport bukan sekadar urusan
+broker; aplikasi tetap harus mengelola batas antara processing dan ACK.
 
-Proyek ini menggunakan pendekatan at-least-once pada Redis Stream dan
-exactly-once effect pada persistent storage melalui idempotent consumer.
-Message baru dibaca dengan `XREADGROUP`. Setelah transaksi PostgreSQL sukses,
-worker menjalankan `XACK`. Jika worker gagal sebelum ACK, message tetap
-pending dan dapat diambil oleh worker lain memakai `XAUTOCLAIM`. Pengiriman
-ulang aman karena insert menggunakan unique key `(topic, event_id)`.
+Proyek ini menggunakan at-least-once delivery pada Redis Streams. Worker
+membaca message, menjalankan transaksi PostgreSQL, lalu mengirim `XACK` hanya
+setelah transaksi sukses. Jika worker crash setelah commit tetapi sebelum ACK,
+message dapat dikirim ulang. Pengiriman ulang tersebut aman karena effect
+persisten dibuat idempotent oleh unique constraint `(topic, event_id)`.
 
-Dengan pola ini, event dapat diterima berkali-kali tetapi hanya satu row
-`processed_events` yang dibuat. Percobaan berikutnya tercatat sebagai
-`duplicate_dropped`, bukan menghasilkan side effect ganda. Jaminan yang tepat
-untuk laporan ini bukan exactly-once transport, melainkan at-least-once
-delivery dengan idempotent processing. Batas jaminannya juga jelas:
-correctness berlaku untuk seluruh side effect yang ditempatkan dalam transaksi
-yang sama. Side effect eksternal di luar PostgreSQL memerlukan transactional
-outbox atau mekanisme idempotency tambahan.
+Jaminan yang diberikan adalah exactly-once persistent effect, bukan
+exactly-once network delivery. Event boleh muncul berkali-kali di Redis, tetapi
+hanya satu row `processed_events` yang dibuat. Delivery berikutnya dicatat
+sebagai `duplicate_dropped`. Semua side effect utama ditempatkan dalam satu
+transaksi: event, counter, topic stats, dan audit. Jika nanti ada side effect
+eksternal di luar PostgreSQL, rancangan perlu pola tambahan seperti
+transactional outbox atau idempotency key pada sistem eksternal.
 
 ## T4. Skema Penamaan Topic dan Event ID untuk Deduplication
 
-Nama merupakan dasar komunikasi dan identifikasi pada sistem terdistribusi.
-Identifier yang baik harus memiliki ruang lingkup jelas, stabil, mudah
-divalidasi, dan memiliki kemungkinan collision yang dapat diterima. Topic
-berfungsi sebagai nama kategori event, sedangkan `event_id` mengidentifikasi
-kejadian tertentu di dalam kategori tersebut. Pemisahan keduanya memungkinkan
-dua domain memakai identifier lokal yang sama tanpa dianggap sebagai event
-yang sama (Coulouris et al., 2012).
+Identifier pada sistem event harus stabil, mudah divalidasi, dan memiliki
+ruang keunikan yang jelas. Topic pada proyek ini adalah kategori log, misalnya
+`auth.login` atau `payment.created`, sedangkan `event_id` adalah identitas
+kejadian di dalam topic tersebut. Pemisahan ini membuat ID yang sama pada dua
+topic berbeda tidak otomatis dianggap duplikat. API membatasi topic dengan
+pola `[a-zA-Z0-9_.-]+` agar aman untuk URL, log, query, dan audit.
 
-Sistem menggunakan nama topic hierarkis berbasis dot, misalnya `auth.login`,
-`payment.created`, `order.placed`, dan `inventory.updated`. Pydantic membatasi
-topic menjadi 1–100 karakter dengan pola `[a-zA-Z0-9_.-]+`. Aturan ini
-mencegah nilai kosong dan karakter yang menyulitkan query, log, atau URL.
-`event_id` berukuran 1–150 karakter. Pada production, producer sebaiknya
-menghasilkan UUID/ULID atau identifier yang menggabungkan source dan sequence
-persisten. Load test memakai `k6-{run_id}-{unique_index}`, sehingga setiap run
-dapat diverifikasi dengan query prefix.
+Untuk event ID production, producer dapat memakai UUID. RFC 9562 yang terbit
+2024 mendefinisikan UUID sebagai identifier 128-bit dan memperkenalkan UUIDv7
+yang memadukan timestamp Unix millisecond dengan random bits untuk uniqueness
+dan locality yang lebih baik pada sistem modern (Davis et al., 2024). Proyek
+ini tidak memaksa UUID karena tugas menilai mekanisme dedup, tetapi load test
+memakai pola deterministik `k6-{run_id}-{unique_index}` agar hasil run mudah
+diverifikasi dengan query prefix.
 
-Deduplication tidak menggunakan `event_id` secara global, tetapi composite key
-`(topic, event_id)`. Skema PostgreSQL menetapkan unique constraint
-`uq_processed_event` pada pasangan tersebut. Ini collision-resistant selama
-producer menjamin keunikan `event_id` dalam satu topic. Timestamp tidak
-dipakai sebagai identitas karena dua event berbeda dapat memiliki timestamp
-sama dan retry dapat membawa timestamp yang identik. Payload juga tidak
-di-hash karena perubahan representasi JSON dapat menghasilkan hash berbeda
-untuk kejadian yang secara semantik sama.
+Deduplication dilakukan pada composite key `(topic, event_id)`, bukan hanya
+`event_id`. Timestamp tidak dipakai sebagai identifier karena beberapa event
+dapat memiliki timestamp sama, dan retry event memang membawa timestamp yang
+sama. Payload juga tidak dipakai sebagai kunci karena perubahan format JSON
+dapat membuat representasi berbeda untuk kejadian yang sama. Dengan composite
+key, aturan dedup sederhana, eksplisit, dan dapat ditegakkan langsung oleh
+PostgreSQL.
 
 ## T5. Ordering Praktis dan Dampaknya
 
-Tidak adanya global clock membuat total ordering lintas proses mahal dan
-sering tidak diperlukan. Physical timestamp dapat berbeda karena clock skew,
-sedangkan urutan message yang diterima satu komponen belum tentu mewakili
-urutan kejadian global. Logical clock dan sequence number dapat membentuk
-causal atau per-source ordering ketika aplikasi benar-benar membutuhkan
-hubungan “terjadi sebelum” (Coulouris et al., 2012).
+Ordering pada Pub-Sub harus dibatasi secara eksplisit. Google Cloud Pub/Sub
+menyatakan bahwa default delivery tidak menjamin ordering, dan message dapat
+dikirim ulang atau muncul out-of-order; ordering dapat diaktifkan hanya untuk
+message dengan ordering key tertentu dalam batas layanan yang mendukungnya
+(Google Cloud, 2026a). Hal ini relevan karena proyek memakai dua worker dalam
+consumer group: message dapat diterima berurutan oleh Redis, tetapi selesai
+diproses pada waktu berbeda.
 
-Proyek ini tidak menjanjikan total ordering. Redis Stream memberikan ID yang
-menunjukkan urutan append pada satu stream, tetapi consumer group membagi
-message ke dua worker. Worker pertama dan kedua dapat memiliki waktu proses
-berbeda, sehingga completion order dan urutan row database dapat berubah.
-Kebijakan sistem adalah menerima event out-of-order. Timestamp producer
-disimpan sebagai `event_timestamp`, sedangkan waktu penyimpanan dicatat pada
-`created_at`. Deduplication tidak bergantung pada urutan, melainkan pada
-`(topic, event_id)`.
+Sistem ini sengaja tidak menjanjikan total ordering. Redis Stream ID
+menunjukkan urutan append, tetapi worker paralel membuat completion order
+berbeda. Oleh karena itu, dedup tidak bergantung pada urutan. Worker menyimpan
+`event_timestamp` dari producer dan `created_at` dari database. Endpoint
+`/events` mengurutkan hasil berdasarkan ID database agar response deterministik
+menurut commit, bukan mengklaim urutan kejadian global.
 
-Dampaknya, endpoint `/events` mengurutkan hasil berdasarkan ID database agar
-response deterministik menurut urutan commit, bukan mengklaim urutan kejadian
-global. Untuk log aggregation, kebijakan ini memaksimalkan parallelism dan
-masih mempertahankan timestamp asli untuk analisis. Jika suatu topic
-membutuhkan strict ordering, mitigasinya adalah partitioning deterministik,
-misalnya hash topic/source ke satu worker, serta sequence number monotonik per
-producer. Konsekuensinya adalah throughput per partition dibatasi oleh satu
-consumer dan recovery harus mempertahankan ownership partition tersebut.
+Dampaknya, sistem cocok untuk log aggregation yang toleran terhadap
+out-of-order event. Analisis temporal tetap dapat memakai timestamp producer,
+sedangkan konsistensi dedup tetap dijaga oleh `(topic, event_id)`. Jika strict
+per-topic ordering dibutuhkan, mitigasinya adalah partitioning deterministik,
+misalnya semua event topic atau source tertentu diarahkan ke satu worker atau
+ordering key. Trade-off-nya adalah throughput per partition turun dan recovery
+harus menjaga ownership partition tersebut.
 
 ## T6. Failure Modes dan Mitigasi
 
-Partial failure berarti satu komponen dapat gagal sementara komponen lain tetap
-berjalan. Failure detector pada sistem asynchronous juga tidak sempurna:
-timeout hanya menunjukkan respons belum diterima, bukan bukti pasti komponen
-mati. Sistem karena itu memerlukan retry, duplicate suppression, persistence,
-dan recovery yang tidak bergantung pada asumsi kegagalan tunggal (Coulouris et
-al., 2012).
+Failure mode utama adalah consumer crash, broker redelivery, database error,
+poison message, dan container recreate. Redis menyediakan Pending Entries List
+untuk consumer group, sehingga message yang sudah dikirim ke consumer tetapi
+belum di-ACK masih dapat dilacak. Command `XAUTOCLAIM` mengambil ownership
+message pending yang idle melebihi batas tertentu dan memindahkannya ke
+consumer pemanggil (Redis Ltd., 2026b). Proyek memakai mekanisme ini dengan
+`PENDING_IDLE_MS=10000`.
 
-Failure mode pertama adalah worker crash sebelum transaksi. Message tidak
-di-ACK sehingga tetap pending. Failure kedua adalah commit sukses tetapi crash
-sebelum ACK. Message akan dikirim ulang, tetapi unique constraint menjadikan
-retry idempotent. Failure ketiga adalah error sementara database; worker
-menambah retry count, menerapkan exponential backoff 0,5; 1; dan seterusnya,
-serta membiarkan message pending. `XAUTOCLAIM` memindahkan message idle ke
-consumer sehat. Setelah tiga kegagalan, message masuk `events:deadletter` dan
-audit log untuk pemeriksaan manual.
+Jika worker gagal sebelum transaksi, message tidak di-ACK dan akan tetap
+pending. Jika commit database berhasil tetapi ACK gagal, redelivery tetap aman
+karena unique constraint menjadikan write idempotent. Jika payload rusak atau
+error berulang, retry count dinaikkan dan worker menggunakan exponential
+backoff. Setelah tiga attempt, message dipindahkan ke `events:deadletter` dan
+dicatat pada audit log.
 
-PostgreSQL dan Redis memakai named volumes untuk crash/recreate recovery.
-Redis mengaktifkan AOF. Compose healthcheck mencegah worker dimulai sebelum
-database, broker, dan API siap. API readiness memeriksa `SELECT 1` dan Redis
-`PING`. Risiko retry storm dikurangi dengan backoff, walaupun jitter belum
-diterapkan. Durable dedup store mencegah duplicate processing setelah restart.
-Keterbatasannya, kegagalan total Docker host tidak ditangani melalui
-replication; proyek hanya membuktikan recovery pada satu host sesuai cakupan
-Compose lokal.
+AWS Prescriptive Guidance menekankan bahwa operasi lintas database dan message
+dapat menimbulkan inkonsistensi jika salah satu berhasil dan lainnya gagal;
+pola outbox menyelesaikan dual-write dengan menyimpan event dalam transaksi
+yang sama (Amazon Web Services, 2024). Proyek ini belum memerlukan outbox
+eksternal karena side effect utama berada di PostgreSQL, tetapi prinsipnya sama:
+batas atomik harus eksplisit. Persistence dijaga melalui named volume
+PostgreSQL/Redis dan healthcheck Compose.
 
 ## T7. Eventual Consistency serta Peran Idempotency dan Deduplication
 
-Pada distributed Pub-Sub, penerimaan event dan penyimpanan hasil terjadi pada
-waktu berbeda. Setelah API mengembalikan `202 Accepted`, event sudah berada di
-Redis Stream tetapi mungkin belum terlihat pada PostgreSQL. Keadaan sementara
-ini merupakan bentuk eventual consistency: jika tidak ada kegagalan permanen
-dan message terus diproses, state database pada akhirnya mencerminkan seluruh
-event yang valid. Model ini meningkatkan availability dan decoupling, tetapi
-client tidak boleh menganggap publish response sebagai bukti synchronous
-commit (Coulouris et al., 2012).
+Pada arsitektur asynchronous, publish response dan hasil final tidak terjadi
+pada saat yang sama. API mengembalikan `202 Accepted` setelah event masuk ke
+Redis, sedangkan row PostgreSQL baru muncul setelah worker selesai. Keadaan ini
+adalah eventual consistency: jika antrean diproses dan tidak ada kegagalan
+permanen, state database akhirnya mengikuti event valid. Azure messaging
+guidance menempatkan broker sebagai perantara yang membuat producer dan
+consumer bertindak secara terpisah (Microsoft, 2026b).
 
-Idempotency menjaga convergence ketika broker mengirim ulang event.
-Deduplication persisten menentukan bahwa semua delivery dengan pasangan
-`(topic, event_id)` yang sama menghasilkan satu row event. Unique constraint
-menjadi aturan konsistensi global yang berlaku untuk semua worker dan tetap
-ada setelah restart. Statistik `unique_processed`, `duplicate_dropped`, serta
-`topic_stats` diperbarui secara atomik di transaksi yang sama dengan event dan
-audit log, sehingga tidak terjadi state event berhasil tetapi counter gagal.
+Eventual consistency tidak boleh berarti data boleh ganda atau tidak
+terkontrol. Google Cloud Pub/Sub menyarankan subscriber idempotent ketika
+menghadapi more-than-once delivery (Google Cloud, 2026a). Pada proyek ini,
+idempotency dijaga oleh unique constraint `(topic, event_id)`. Semua delivery
+dengan kunci sama konvergen ke satu row `processed_events`, sedangkan delivery
+berikutnya menjadi `duplicate_dropped`.
 
-Endpoint `/stats`, `/metrics`, dan `/events` memberi observability terhadap
-proses convergence. `consumer_group_lag`, pending count, serta
-`unprocessed_estimate` membantu membedakan state yang belum konvergen dari
-kegagalan permanen. Dead-letter menunjukkan message yang tidak dapat mencapai
-state valid setelah retry. Dengan demikian, eventual consistency pada proyek
-ini bukan berarti konsistensi dibiarkan tanpa batas; terdapat invariant
-persisten, mekanisme recovery, serta indikator untuk mengetahui apakah sistem
-masih menuju state konvergen.
+Counter global, topic stats, dan audit log diperbarui dalam transaksi yang
+sama dengan keputusan dedup. Ini penting agar state yang akhirnya terlihat
+tidak hanya event unik, tetapi juga statistik dan audit yang konsisten.
+Endpoint `/metrics` menunjukkan pending, consumer-group lag, dan
+unprocessed estimate untuk membedakan sistem yang masih mengejar antrean dari
+kegagalan permanen. Dead-letter menjadi batas ketika event tidak dapat
+berkonvergensi setelah retry. Dengan demikian, eventual consistency dibatasi
+oleh invariant, recovery, dan observability.
 
 ## T8. Desain Transaksi: ACID, Isolation Level, dan Pencegahan Lost Update
 
-Transaksi mengelompokkan beberapa operasi menjadi satu unit atomik. ACID
-mencakup atomicity, consistency, isolation, dan durability. Pada proyek ini,
-satu transaksi memuat insert ke `processed_events`, update counter global,
-update `topic_stats`, dan insert `audit_logs`. Jika salah satu statement gagal,
-seluruh perubahan di-rollback. Hal ini mencegah partial commit, misalnya event
-tersimpan tetapi audit dan statistik tidak bertambah (Coulouris et al., 2012).
+PostgreSQL mendefinisikan `READ COMMITTED` sebagai isolation level default;
+query melihat data yang telah commit sebelum query dimulai, dan `INSERT ... ON
+CONFLICT DO NOTHING` dapat tidak melakukan insert karena konflik dari transaksi
+lain meskipun row konflik tidak terlihat pada snapshot statement tersebut
+(PostgreSQL Global Development Group, 2026a). Sifat ini sesuai dengan desain
+dedup proyek karena keputusan conflict diserahkan ke unique constraint, bukan
+ke hasil `SELECT` aplikasi.
 
-Isolation level yang dipilih adalah `READ COMMITTED`, yaitu default PostgreSQL.
-Setiap statement melihat data yang telah di-commit sebelum statement tersebut
-dimulai. Level ini tidak mencegah seluruh non-repeatable read atau phantom
-read, tetapi operasi dedup proyek tidak menggunakan pola “SELECT lalu INSERT”.
-Keputusan dilakukan atomik oleh `INSERT ... ON CONFLICT DO NOTHING RETURNING
-id`, sehingga unique constraint menyelesaikan konflik concurrent insert.
-PostgreSQL mendukung perilaku `ON CONFLICT` pada Read Committed untuk
-menentukan satu hasil insert atau conflict secara konsisten (PostgreSQL Global
-Development Group, n.d.-a).
+Satu transaksi worker mencakup insert event, update counter global, upsert
+topic stats, dan insert audit log. Jika insert berhasil, status `processed`;
+jika conflict, status `duplicate_dropped`. Kedua jalur tetap memperbarui
+statistik dan audit secara atomik. Jika salah satu statement gagal, transaksi
+rollback dan Redis message belum di-ACK, sehingga dapat dicoba ulang.
 
-Lost update pada counter dicegah dengan operasi server-side `value =
-stats.value + delta`, bukan membaca nilai ke aplikasi lalu menulis hasil.
-Upsert `topic_stats` menggunakan pola yang sama. `SERIALIZABLE` tidak dipilih
-karena menambah kemungkinan serialization failure dan retry transaksi,
-sedangkan invariant proyek sudah dijaga unique constraint dan atomic update.
-Trade-off ini mempertahankan correctness sekaligus memungkinkan dua worker
-beroperasi dengan concurrency tinggi.
+Lost update dicegah dengan ekspresi database `value = stats.value + delta`.
+Aplikasi tidak membaca counter ke memori lalu menulis hasilnya kembali.
+Upsert `topic_stats` memakai pola yang sama. `SERIALIZABLE` tidak dipilih
+karena PostgreSQL mengharuskan aplikasi siap mengulang transaksi saat
+serialization failure, sedangkan invariant proyek sudah dijaga oleh unique
+constraint dan atomic update. Dengan `READ COMMITTED`, throughput lebih baik
+dan correctness tetap terjaga untuk operasi sederhana berbasis key.
 
 ## T9. Kontrol Konkurensi: Unique Constraint, Upsert, dan Idempotent Write
 
-Race condition terjadi ketika hasil akhir bergantung pada interleaving operasi
-concurrent. Pendekatan naive `SELECT COUNT(*)` lalu `INSERT` tidak aman: dua
-worker dapat sama-sama membaca “belum ada” dan kemudian menulis duplikat.
-Lock eksplisit dapat mencegahnya, tetapi menambah kompleksitas, contention,
-dan risiko deadlock. Kontrol konkurensi sebaiknya ditempatkan pada primitive
-atomik yang paling dekat dengan data bersama (Coulouris et al., 2012).
+Race condition paling berbahaya muncul ketika dua worker memproses event yang
+sama secara bersamaan. Pola `SELECT` lalu `INSERT` tidak aman karena dua
+transaksi dapat sama-sama membaca kondisi “belum ada”. PostgreSQL menyediakan
+`ON CONFLICT` pada `INSERT` untuk memilih aksi alternatif ketika terjadi
+conflict pada unique constraint atau exclusion constraint (PostgreSQL Global
+Development Group, 2026b). Proyek memakai primitive ini sebagai mekanisme
+kontrol konkurensi utama.
 
-Proyek menggunakan unique constraint `(topic, event_id)` sebagai arbiter
-database. Kedua worker boleh mencoba insert bersamaan, tetapi PostgreSQL hanya
-mengizinkan satu row. Statement `ON CONFLICT DO NOTHING RETURNING id`
-memberikan sinyal langsung: row hasil berarti `processed`; tanpa row berarti
-`duplicate_dropped`. Tidak ada application-level distributed lock dan tidak
-ada celah antara pengecekan dengan penulisan. Dokumentasi PostgreSQL
-menempatkan `ON CONFLICT` sebagai mekanisme penanganan alternative action saat
-unique conflict terjadi (PostgreSQL Global Development Group, n.d.-b).
+Tabel `processed_events` memiliki unique constraint `(topic, event_id)`.
+Ketika dua worker mencoba insert kunci sama, database hanya mengizinkan satu
+insert berhasil. Statement `RETURNING id` menjadi indikator keputusan:
+ada row berarti `processed`, tidak ada row berarti `duplicate_dropped`.
+Tidak diperlukan distributed lock di aplikasi, sehingga tidak ada lock server
+tambahan dan tidak ada celah antara pengecekan dengan penulisan.
 
-Counter global dan per-topic memakai upsert atomik. Seluruh write berada dalam
-satu transaksi, sehingga idempotent decision, statistik, dan audit memiliki
-batas commit sama. Test concurrency menjalankan 20 coroutine untuk event
-identik dan menghasilkan tepat satu `processed`, 19 `duplicate_dropped`, serta
-satu row database. Test lain mengirim 10 event unik secara concurrent dan
-seluruhnya tersimpan. Hasil ini membuktikan bahwa correctness berasal dari
-database constraint dan transaction, bukan kebetulan scheduling worker.
+Counter memakai upsert atomik, misalnya `stats.value + delta`, sehingga
+beberapa worker dapat menaikkan counter tanpa lost update. Seluruh operasi
+berada dalam satu transaksi agar audit dan statistik mengikuti keputusan
+dedup. Test concurrency menjalankan 20 pemrosesan simultan terhadap event yang
+sama dan menghasilkan satu row, satu `processed`, serta 19
+`duplicate_dropped`. Ini membuktikan correctness berasal dari constraint
+database dan idempotent write pattern, bukan dari urutan scheduling worker.
 
 ## T10. Orkestrasi Compose, Keamanan Lokal, Persistence, dan Observability
 
-Docker Compose mendefinisikan enam jenis service: PostgreSQL, Redis,
-aggregator API, dua aggregator worker, publisher, dan k6. Compose memberikan
-service discovery berdasarkan nama service serta satu network lokal
-`uas_net`. Hanya API yang mempublikasikan port `8080` ke host; PostgreSQL dan
-Redis tidak memiliki host port. Pembatasan ini mengurangi permukaan akses dan
-memenuhi syarat seluruh komunikasi internal berlangsung pada jaringan
-Compose.
+Docker Compose mengatur PostgreSQL, Redis, API, dua worker, publisher, dan k6
+dalam satu network `uas_net`. Hanya API yang membuka port `8080` ke host;
+PostgreSQL dan Redis hanya dapat diakses service internal. Compose mendukung
+`depends_on` dengan `condition: service_healthy`, sehingga service dependent
+menunggu dependency sehat sebelum mulai (Docker, Inc., 2026a). Proyek memakai
+ini agar worker tidak start sebelum PostgreSQL, Redis, dan API siap.
 
-PostgreSQL, Redis, dan API memiliki healthcheck. Dependency menggunakan
-`condition: service_healthy`, sehingga worker dan tool tidak hanya menunggu
-container berjalan, tetapi menunggu dependency siap menerima request. Docker
-Compose menjamin dependency dengan kondisi tersebut sehat sebelum dependent
-service dimulai (Docker, Inc., n.d.-a). Application image memakai
-`python:3.11-slim` dan user non-root. Password masih berupa environment
-development karena sistem hanya ditujukan untuk jaringan lokal demonstrasi.
+Persistence memakai named volume `pg_data` dan `redis_data`. Docker
+menjelaskan volume sebagai mekanisme persistent data yang dikelola Docker dan
+tidak hilang hanya karena container dibuat ulang (Docker, Inc., 2026b). Uji
+`test-persistence-recreate.ps1` membuktikan row marker tetap ada setelah
+container PostgreSQL di-recreate. Application image juga menjalankan user
+non-root; credential masih berbentuk environment development karena cakupan
+tugas adalah Compose lokal.
 
-Persistence memakai named volume `pg_data` dan `redis_data`. Docker volume
-mempertahankan data setelah container yang menggunakannya dihapus atau dibuat
-ulang (Docker, Inc., n.d.-b). Observability mencakup structured worker logs,
-audit table, `/health`, `/ready`, `/stats`, dan `/metrics`. Metrics
-menampilkan accepted/processed rate, duplicate rate, stream length, pending,
-consumer-group lag, unprocessed estimate, dan dead-letter length. Rancangan
-ini membuat deployment dapat diperiksa dari status service hingga correctness
-event dan kondisi antrean.
+Observability mengikuti konsep modern bahwa aplikasi harus mengeluarkan
+telemetry berupa log, metrics, dan trace/sinyal lain agar kondisi internal
+dapat dipahami dari outputnya (OpenTelemetry Authors, 2026). Proyek
+menyediakan log worker, audit log, `/health`, `/ready`, `/stats`, dan
+`/metrics`. Metrics memuat accepted/processed rate, duplicate rate, stream
+length, pending, consumer lag, unprocessed estimate, dan dead-letter length.
 
 ---
 
@@ -859,28 +835,49 @@ persistent effect melalui idempotency.
 
 # Daftar Pustaka
 
-Coulouris, G., Dollimore, J., Kindberg, T., & Blair, G. (2012).
-*Distributed systems: Concepts and design* (5th ed.). Pearson Education.
+Amazon Web Services. (2024). *Transactional outbox pattern*. AWS Prescriptive
+Guidance. Retrieved June 17, 2026, from
+https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html
 
-Docker, Inc. (n.d.-a). *Control startup and shutdown order in Compose*.
-Docker Documentation. Retrieved June 14, 2026, from
+Davis, K., Peabody, B., & Leach, P. (2024). *Universally unique identifiers
+(UUIDs)* (RFC 9562). RFC Editor. https://www.rfc-editor.org/info/rfc9562
+
+Docker, Inc. (2026a). *Control startup and shutdown order in Compose*. Docker
+Documentation. Retrieved June 17, 2026, from
 https://docs.docker.com/compose/how-tos/startup-order/
 
-Docker, Inc. (n.d.-b). *Volumes*. Docker Documentation. Retrieved June 14,
+Docker, Inc. (2026b). *Volumes*. Docker Documentation. Retrieved June 17,
 2026, from https://docs.docker.com/engine/storage/volumes/
 
-PostgreSQL Global Development Group. (n.d.-a). *Transaction isolation*.
-PostgreSQL 18 Documentation. Retrieved June 14, 2026, from
+Google Cloud. (2026a). *Subscription overview*. Google Cloud Documentation.
+Retrieved June 17, 2026, from
+https://docs.cloud.google.com/pubsub/docs/subscription-overview
+
+Google Cloud. (2026b). *Exactly-once delivery*. Google Cloud Documentation.
+Retrieved June 17, 2026, from
+https://docs.cloud.google.com/pubsub/docs/exactly-once-delivery
+
+Microsoft. (2026a). *Publisher-Subscriber pattern*. Microsoft Learn. Retrieved
+June 17, 2026, from
+https://learn.microsoft.com/en-us/azure/architecture/patterns/publisher-subscriber
+
+Microsoft. (2026b). *Asynchronous messaging options*. Microsoft Learn.
+Retrieved June 17, 2026, from
+https://learn.microsoft.com/en-us/azure/architecture/guide/technology-choices/messaging
+
+OpenTelemetry Authors. (2026). *Observability primer*. OpenTelemetry
+Documentation. Retrieved June 17, 2026, from
+https://opentelemetry.io/docs/concepts/observability-primer/
+
+PostgreSQL Global Development Group. (2026a). *Transaction isolation*.
+PostgreSQL 18 Documentation. Retrieved June 17, 2026, from
 https://www.postgresql.org/docs/current/transaction-iso.html
 
-PostgreSQL Global Development Group. (n.d.-b). *INSERT*. PostgreSQL 18
-Documentation. Retrieved June 14, 2026, from
+PostgreSQL Global Development Group. (2026b). *INSERT*. PostgreSQL 18
+Documentation. Retrieved June 17, 2026, from
 https://www.postgresql.org/docs/current/sql-insert.html
 
-Redis Ltd. (n.d.-a). *Redis Streams*. Redis Documentation. Retrieved June 14,
-2026, from https://redis.io/docs/latest/develop/data-types/streams/
-
-Redis Ltd. (n.d.-b). *XAUTOCLAIM*. Redis Documentation. Retrieved June 14,
+Redis Ltd. (2026b). *XAUTOCLAIM*. Redis Documentation. Retrieved June 17,
 2026, from https://redis.io/docs/latest/commands/xautoclaim/
 
 ---
@@ -938,4 +935,3 @@ docs/                Dokumentasi, laporan, dan bukti gambar
 docker-compose.yaml  Orkestrasi service
 README.md            Instruksi project
 ```
-
