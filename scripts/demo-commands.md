@@ -17,7 +17,7 @@ curl.exe http://localhost:8080/ready
 ## 3. Publish Single Event
 
 ```powershell
-curl.exe -X POST http://localhost:8080/publish -H "Content-Type: application/json" -d "{\"topic\":\"auth.login\",\"event_id\":\"manual-001\",\"timestamp\":\"2026-06-11T10:00:00Z\",\"source\":\"manual-curl\",\"payload\":{\"user_id\":\"u001\"}}"
+curl.exe -X POST http://localhost:8080/publish -H "Content-Type: application/json" -d '{\"topic\":\"auth.login\",\"event_id\":\"manual-001\",\"timestamp\":\"2026-06-11T10:00:00Z\",\"source\":\"manual-curl\",\"payload\":{\"user_id\":\"u001\"}}'
 ```
 
 Jalankan dua kali untuk menunjukkan deduplication.
@@ -25,7 +25,7 @@ Jalankan dua kali untuk menunjukkan deduplication.
 ## 4. Publish Batch pada Endpoint Utama
 
 ```powershell
-curl.exe -X POST http://localhost:8080/publish -H "Content-Type: application/json" --data-binary "@scripts/batch-demo.json"
+curl.exe -X POST http://localhost:8080/publish -H "Content-Type: application/json" --data-binary '@scripts/batch-demo.json'
 ```
 
 ## 5. Events, Stats, dan Metrics
@@ -39,8 +39,8 @@ curl.exe http://localhost:8080/metrics
 ## 6. Log Dua Worker
 
 ```powershell
-docker compose logs aggregator-worker-1 --tail=100
-docker compose logs aggregator-worker-2 --tail=100
+docker compose logs --tail=100 aggregator-worker-1
+docker compose logs --tail=100 aggregator-worker-2
 ```
 
 ## 7. Tests
@@ -70,6 +70,6 @@ docker compose --profile tools run --rm k6
 ## 11. Verifikasi k6
 
 ```powershell
-docker compose exec postgres psql -U appuser -d appdb -c "SELECT COUNT(*) AS total_unique_k6_events FROM processed_events WHERE event_id LIKE 'k6-uasfinal001-%';"
-docker compose exec postgres psql -U appuser -d appdb -c "SELECT status, COUNT(*) FROM audit_logs WHERE event_id LIKE 'k6-uasfinal001-%' GROUP BY status ORDER BY status;"
+docker compose exec -T postgres psql -U appuser -d appdb -c "SELECT COUNT(*) AS total_unique_k6_events FROM processed_events WHERE event_id LIKE 'k6-uasfinal001-%';"
+docker compose exec -T postgres psql -U appuser -d appdb -c "SELECT status, COUNT(*) FROM audit_logs WHERE event_id LIKE 'k6-uasfinal001-%' GROUP BY status ORDER BY status;"
 ```

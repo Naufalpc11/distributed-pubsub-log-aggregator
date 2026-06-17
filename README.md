@@ -63,7 +63,7 @@ Single event:
 ```powershell
 curl.exe -X POST http://localhost:8080/publish `
   -H "Content-Type: application/json" `
-  -d "{\"topic\":\"auth.login\",\"event_id\":\"manual-001\",\"timestamp\":\"2026-06-11T10:00:00Z\",\"source\":\"manual-curl\",\"payload\":{\"user_id\":\"u001\"}}"
+  -d '{\"topic\":\"auth.login\",\"event_id\":\"manual-001\",\"timestamp\":\"2026-06-11T10:00:00Z\",\"source\":\"manual-curl\",\"payload\":{\"user_id\":\"u001\"}}'
 ```
 
 Batch menggunakan endpoint yang sama:
@@ -71,7 +71,7 @@ Batch menggunakan endpoint yang sama:
 ```powershell
 curl.exe -X POST http://localhost:8080/publish `
   -H "Content-Type: application/json" `
-  --data-binary "@scripts/batch-demo.json"
+  --data-binary '@scripts/batch-demo.json'
 ```
 
 ## Idempotency dan Reliability

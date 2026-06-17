@@ -95,8 +95,8 @@ p(95)            : < 1000 ms
 Verifikasi database:
 
 ```powershell
-docker compose exec postgres psql -U appuser -d appdb -c "SELECT COUNT(*) FROM processed_events WHERE event_id LIKE 'k6-uasfinal001-%';"
-docker compose exec postgres psql -U appuser -d appdb -c "SELECT status, COUNT(*) FROM audit_logs WHERE event_id LIKE 'k6-uasfinal001-%' GROUP BY status ORDER BY status;"
+docker compose exec -T postgres psql -U appuser -d appdb -c "SELECT COUNT(*) FROM processed_events WHERE event_id LIKE 'k6-uasfinal001-%';"
+docker compose exec -T postgres psql -U appuser -d appdb -c "SELECT status, COUNT(*) FROM audit_logs WHERE event_id LIKE 'k6-uasfinal001-%' GROUP BY status ORDER BY status;"
 ```
 
 Target adalah 14.000 `processed` dan 6.000 `duplicate_dropped`.
