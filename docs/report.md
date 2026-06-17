@@ -8,7 +8,7 @@
 **Program Studi:** Informatika  
 **Dosen Pengampu:** Riska Kurniyanto Abdullah, S.T., M.Kom.  
 **Repository GitHub:** [distributed-pubsub-log-aggregator](https://github.com/Naufalpc11/distributed-pubsub-log-aggregator)<br>
-**Video Demo:** [Isi URL YouTube Unlisted/Public]
+**Video Demo:** [[UAS Sistem Paralel dan Terdistribusi | Distributed Pub-Sub Log Aggregator](https://youtu.be/0Zx_AZ8Mvdc)]
 
 ---
 
